@@ -1,3 +1,21 @@
+"""
+seed.py
+-------
+ETL entry-point for the Personal Telemetry & Activity Analytics platform.
+
+Reads UserInfo.csv and Sensors.csv and persists them into the 5-table
+PostgreSQL schema defined in models.py.
+
+ORM models live exclusively in models.py — this file imports them from
+there so the schema definition is never duplicated across the codebase.
+
+Usage
+-----
+    python seed.py                              # default CSV paths
+    python seed.py UserInfo.csv Sensors.csv     # explicit paths
+    DB_USER=myuser DB_PASSWORD=secret python seed.py
+"""
+
 from __future__ import annotations
 
 import csv
@@ -7,16 +25,27 @@ from datetime import datetime
 
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-from sqlalchemy import (
-    create_engine, Column, Integer, String, SmallInteger,
-    Numeric, TIMESTAMP, ForeignKey, UniqueConstraint, text
-)
+from sqlalchemy import create_engine
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker
+
+# ── Import ORM models from the shared models module ───────────────────────────
+# The Base and all five table classes (User, DeviceStatus, MotionLog,
+# EnvironmentalLog, OrientationLog) are defined once in models.py.
+# seed.py re-uses them directly so the schema is never duplicated.
+from models import (
+    Base,
+    DeviceStatus,
+    EnvironmentalLog,
+    MotionLog,
+    OrientationLog,
+    User,
+)
 
 
-# Database connection
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Database connection — every value overridable via environment variable
+# ─────────────────────────────────────────────────────────────────────────────
 DB_USER     = os.getenv("DB_USER",     "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
 DB_HOST     = os.getenv("DB_HOST",     "localhost")
@@ -25,17 +54,14 @@ DB_NAME     = os.getenv("DB_NAME",     "telemetry_db")
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
 )
 
-Base = declarative_base()
 
-
-
-# Helper functions
-
-
-def clean_float(val):
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper / cleaning functions
+# ─────────────────────────────────────────────────────────────────────────────
+def clean_float(val) -> float:
     if val is None or str(val).strip() == "":
         return 0.0
     try:
@@ -44,7 +70,7 @@ def clean_float(val):
         return 0.0
 
 
-def clean_int(val):
+def clean_int(val) -> int:
     if val is None or str(val).strip() == "":
         return 0
     s = str(val).strip().replace("%", "")
@@ -54,96 +80,25 @@ def clean_int(val):
         return 0
 
 
-def clean_str(val):
+def clean_str(val) -> str:
     s = str(val).strip() if val is not None else ""
     return s if s else "0"
 
 
-
-# ORM Models
-
-
-class User(Base):
-    __tablename__ = "users"
-
-    uid        = Column(String(50), primary_key=True)
-    age_range  = Column(String(10))
-    gender     = Column(String(50))
-    university = Column(String(50))
-
-    device_statuses = relationship("DeviceStatus", back_populates="user",
-                                   cascade="all, delete-orphan")
-
-
-class DeviceStatus(Base):
-    __tablename__ = "device_status"
-    __table_args__ = (
-        UniqueConstraint("uid", "recorded_at", name="uq_device_uid_recorded"),
-    )
-
-    reading_id    = Column(Integer, primary_key=True, autoincrement=True)
-    uid           = Column(String(50), ForeignKey("users.uid"), nullable=False)
-    recorded_at   = Column(TIMESTAMP, nullable=True)
-    battery_level = Column(SmallInteger)
-    gps_latitude  = Column(Numeric(12, 7))
-    gps_longitude = Column(Numeric(12, 7))
-
-    user              = relationship("User", back_populates="device_statuses")
-    motion_log        = relationship("MotionLog",        back_populates="device_status",
-                                     uselist=False, cascade="all, delete-orphan")
-    environmental_log = relationship("EnvironmentalLog", back_populates="device_status",
-                                     uselist=False, cascade="all, delete-orphan")
-    orientation_log   = relationship("OrientationLog",   back_populates="device_status",
-                                     uselist=False, cascade="all, delete-orphan")
-
-
-class MotionLog(Base):
-    __tablename__ = "motion_logs"
-
-    reading_id = Column(Integer, ForeignKey("device_status.reading_id"), primary_key=True)
-    accel_x    = Column(Numeric(12, 7))
-    accel_y    = Column(Numeric(12, 7))
-    accel_z    = Column(Numeric(12, 7))
-    grav_x     = Column(Numeric(12, 7))
-    grav_y     = Column(Numeric(12, 7))
-    grav_z     = Column(Numeric(12, 7))
-    gyro_x     = Column(Numeric(12, 7))
-    gyro_y     = Column(Numeric(12, 7))
-    gyro_z     = Column(Numeric(12, 7))
-
-    device_status = relationship("DeviceStatus", back_populates="motion_log")
-
-
-class EnvironmentalLog(Base):
-    __tablename__ = "environmental_logs"
-
-    reading_id = Column(Integer, ForeignKey("device_status.reading_id"), primary_key=True)
-    light      = Column(Numeric(10, 4))
-    mag_x      = Column(Numeric(12, 7))
-    mag_y      = Column(Numeric(12, 7))
-    mag_z      = Column(Numeric(12, 7))
-
-    device_status = relationship("DeviceStatus", back_populates="environmental_log")
-
-
-class OrientationLog(Base):
-    __tablename__ = "orientation_logs"
-
-    reading_id = Column(Integer, ForeignKey("device_status.reading_id"), primary_key=True)
-    azimuth    = Column(Numeric(12, 7))
-    pitch      = Column(Numeric(12, 7))
-    roll       = Column(Numeric(12, 7))
-
-    device_status = relationship("DeviceStatus", back_populates="orientation_log")
-
-
-# Auto create database if missing database
-def create_database_if_missing():
+# ─────────────────────────────────────────────────────────────────────────────
+# Database bootstrap
+# ─────────────────────────────────────────────────────────────────────────────
+def create_database_if_missing() -> None:
+    """
+    Connect to the postgres maintenance database and create DB_NAME if it
+    does not yet exist.  Uses psycopg2 directly because SQLAlchemy cannot
+    issue CREATE DATABASE inside a transaction block.
+    """
     try:
         conn = psycopg2.connect(
             host=DB_HOST, port=DB_PORT,
             user=DB_USER, password=DB_PASSWORD,
-            dbname="postgres"
+            dbname="postgres",
         )
         conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
         cur = conn.cursor()
@@ -162,33 +117,47 @@ def create_database_if_missing():
         sys.exit(1)
 
 
-# Ensure a user row exists, insert placeholder if not in UserInfo
+# ─────────────────────────────────────────────────────────────────────────────
+# User helpers
+# ─────────────────────────────────────────────────────────────────────────────
 def ensure_user(session, uid: str, known_uids: set) -> bool:
     """
-    If uid is not in known_uids, insert a placeholder user with default
-    values and add it to the set so it is only inserted once.
+    Guarantee a User row exists for *uid*.
+
+    If the UID is not in *known_uids* a placeholder row is inserted with
+    default demographic values.  Returns False only when uid == "0"
+    (sentinel for a completely blank UID field).
     """
     if uid in known_uids:
         return True
     if uid == "0":
-        return False  # skip the completely empty UID
+        return False
 
-    stmt = (
+    session.execute(
         pg_insert(User)
         .values(uid=uid, age_range="0", gender="0", university="0")
         .on_conflict_do_nothing(constraint="users_pkey")
     )
-    session.execute(stmt)
     session.flush()
     known_uids.add(uid)
     return True
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ETL — Users
+# ─────────────────────────────────────────────────────────────────────────────
+def load_users(session, filepath: str = "UserInfo.csv") -> set:
+    """
+    Parse *filepath* (UserInfo.csv) and upsert every row into the users table.
 
-# ETL for Users
-def load_users(session, filepath="UserInfo.csv") -> set:
+    Returns
+    -------
+    set[str]
+        Set of all UIDs successfully loaded (used by load_sensors to decide
+        whether a placeholder user needs to be created).
+    """
     print(f"\nLoading: {filepath}")
-    known_uids = set()
+    known_uids: set[str] = set()
     errors = 0
 
     with open(filepath, mode="r", newline="", encoding="utf-8-sig") as f:
@@ -201,7 +170,7 @@ def load_users(session, filepath="UserInfo.csv") -> set:
                 if uid == "0":
                     raise ValueError("Missing UID")
 
-                stmt = (
+                session.execute(
                     pg_insert(User)
                     .values(
                         uid        = uid,
@@ -215,10 +184,9 @@ def load_users(session, filepath="UserInfo.csv") -> set:
                             age_range  = clean_str(row.get("age")),
                             gender     = clean_str(row.get("gender")),
                             university = clean_str(row.get("uni")),
-                        )
+                        ),
                     )
                 )
-                session.execute(stmt)
                 known_uids.add(uid)
 
             except Exception as e:
@@ -231,11 +199,17 @@ def load_users(session, filepath="UserInfo.csv") -> set:
     return known_uids
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ETL — Sensors
+# ─────────────────────────────────────────────────────────────────────────────
+def load_sensors(session, known_uids: set, filepath: str = "Sensors.csv") -> None:
+    """
+    Parse *filepath* (Sensors.csv) and insert one row per sensor snapshot
+    into device_status plus its three child log tables.
 
-# ETL for Sensors
-
-
-def load_sensors(session, known_uids: set, filepath="Sensors.csv"):
+    Duplicate (uid, recorded_at) pairs are silently skipped so the script
+    is always safe to re-run.
+    """
     print(f"\nLoading: {filepath}")
 
     inserted          = 0
@@ -254,7 +228,6 @@ def load_sensors(session, known_uids: set, filepath="Sensors.csv"):
             try:
                 uid = clean_str(row.get("UID"))
 
-                # If UID missing from Users, auto-insert a placeholder with defaults
                 if uid not in known_uids:
                     if not ensure_user(session, uid, known_uids):
                         errors += 1
@@ -262,20 +235,24 @@ def load_sensors(session, known_uids: set, filepath="Sensors.csv"):
                     placeholder_users += 1
                     print(f"  [row {i}] Placeholder user created for UID: {uid}")
 
-                # Parse timestamp from CSV column "Date_time", format "M/D/YYYY HH:MM"
-                ts_raw = (row.get("Date_time") or "").strip()
+                # Parse timestamp
+                ts_raw      = (row.get("Date_time") or "").strip()
                 recorded_at = None
                 if ts_raw:
-                    for fmt in ("%m/%d/%Y %H:%M", "%m/%d/%Y %H:%M:%S",
-                                "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                    for fmt in (
+                        "%m/%d/%Y %H:%M",
+                        "%m/%d/%Y %H:%M:%S",
+                        "%Y-%m-%d %H:%M:%S",
+                        "%Y-%m-%dT%H:%M:%S",
+                    ):
                         try:
                             recorded_at = datetime.strptime(ts_raw, fmt)
                             break
                         except ValueError:
                             continue
 
-                # Insert DeviceStatus, skip silently if (uid, recorded_at) duplicate
-                stmt = (
+                # DeviceStatus — skip silently on (uid, recorded_at) conflict
+                result = session.execute(
                     pg_insert(DeviceStatus)
                     .values(
                         uid           = uid,
@@ -287,14 +264,13 @@ def load_sensors(session, known_uids: set, filepath="Sensors.csv"):
                     .on_conflict_do_nothing(constraint="uq_device_uid_recorded")
                     .returning(DeviceStatus.reading_id)
                 )
-                result = session.execute(stmt)
                 row_id = result.scalar()
 
                 if row_id is None:
                     duplicates += 1
                     continue
 
-                # Insert three child log rows
+                # Child log tables
                 session.execute(
                     pg_insert(MotionLog).values(
                         reading_id = row_id,
@@ -345,22 +321,32 @@ def load_sensors(session, known_uids: set, filepath="Sensors.csv"):
     print(f"  Errors            : {errors}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry-point
+# ─────────────────────────────────────────────────────────────────────────────
+def run_seed(user_file: str = "UserInfo.csv", sensor_file: str = "Sensors.csv") -> None:
+    """
+    Full ETL pipeline: ensure the database exists, create the schema,
+    then load users followed by sensor readings.
 
-# Entry point
-
-
-def run_seed(user_file="UserInfo.csv", sensor_file="Sensors.csv"):
+    Parameters
+    ----------
+    user_file   : path to UserInfo.csv
+    sensor_file : path to Sensors.csv
+    """
     print("=" * 60)
     print("  Personal Telemetry Seed Script")
     print("=" * 60)
 
-    print("\nChecking database...")
+    print("\nChecking database…")
     create_database_if_missing()
 
     engine  = create_engine(DATABASE_URL, echo=False)
     Session = sessionmaker(bind=engine)
 
-    print("\nCreating schema (if tables do not already exist)...")
+    print("\nCreating schema (if tables do not already exist)…")
+    # Uses the Base imported from models.py — same metadata the rest of
+    # the application uses, so schema definitions stay perfectly in sync.
     Base.metadata.create_all(engine)
     print("  Schema OK")
 
