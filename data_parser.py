@@ -19,7 +19,6 @@ class DataParser:
         self.parse_telemetry()
 
     def parse_telemetry(self):
-        """Updated to match your actual CSV columns (lat, speed_knots, etc)."""
         with open(self.sensor_file, mode="r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for row in reader:

@@ -15,18 +15,19 @@ Public API
 
 from __future__ import annotations
 
-import csv
-import io
 import os
 from datetime import datetime
-from typing import BinaryIO, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
+import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from sqlalchemy import create_engine
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import joinedload, Session, sessionmaker
 
 from models import Base, DeviceStatus, EnvironmentalLog, MotionLog, OrientationLog, User
+from data_parser import DataParser
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,8 +67,39 @@ class DatabaseManager:
     """
 
     def __init__(self, database_url: str = DEFAULT_DATABASE_URL) -> None:
+        self._database_url = database_url
+        self.create_database_if_missing()
         self.engine: Engine        = create_engine(database_url, echo=False)
         self.Session: sessionmaker = sessionmaker(bind=self.engine)
+
+    # ── Database bootstrap ────────────────────────────────────────────────────
+    def create_database_if_missing(self) -> None:
+        """
+        Connect to the postgres maintenance database and create the target
+        database if it does not yet exist. Called automatically on __init__
+        so that init_schema() never fails with 'database does not exist'.
+        """
+        try:
+            conn = psycopg2.connect(
+                host     = _DB_HOST,
+                port     = _DB_PORT,
+                user     = _DB_USER,
+                password = _DB_PASSWORD,
+                dbname   = "postgres",
+            )
+            conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (_DB_NAME,))
+            if cur.fetchone() is None:
+                cur.execute(f'CREATE DATABASE "{_DB_NAME}"')
+                print(f"  Created database '{_DB_NAME}'")
+            cur.close()
+            conn.close()
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not connect to PostgreSQL at {_DB_HOST}:{_DB_PORT} "
+                f"as '{_DB_USER}'. Detail: {e}"
+            ) from e
 
     # ── Schema ────────────────────────────────────────────────────────────────
     def init_schema(self) -> None:
@@ -228,127 +260,10 @@ class DatabaseManager:
             new_users   – placeholder User rows auto-created for unknown UIDs
             errors      – rows that raised an exception (logged to stderr)
         """
-        # ── Decode bytes → text for csv.DictReader ────────────────────────
-        text    = file_obj.read().decode("utf-8-sig", errors="replace")
-        reader  = csv.DictReader(io.StringIO(text))
-        all_rows = list(reader)               # materialise so we know total count
-        total    = len(all_rows)
-
-        counters = dict(inserted=0, duplicates=0, new_users=0, errors=0)
-
         session: Session = self.Session()
-        known_uids: set[str] = {
-            uid for (uid,) in session.query(User.uid).all()
-        }
-
         try:
-            for row_num, row in enumerate(all_rows, start=1):
-                if not any(row.values()):
-                    continue
-
-                try:
-                    uid = self._clean_str(row.get("UID"))
-                    if uid == "0":
-                        counters["errors"] += 1
-                        continue
-
-                    # ── Ensure user row exists ────────────────────────────
-                    if uid not in known_uids:
-                        session.execute(
-                            pg_insert(User)
-                            .values(uid=uid, age_range="0", gender="0", university="0")
-                            .on_conflict_do_nothing(constraint="users_pkey")
-                        )
-                        session.flush()
-                        known_uids.add(uid)
-                        counters["new_users"] += 1
-
-                    # ── Parse timestamp ───────────────────────────────────
-                    recorded_at = self._parse_ts(row.get("Date_time") or "")
-
-                    # ── DeviceStatus ──────────────────────────────────────
-                    result = session.execute(
-                        pg_insert(DeviceStatus)
-                        .values(
-                            uid           = uid,
-                            recorded_at   = recorded_at,
-                            battery_level = self._clean_int(row.get("BATTERY_LEVEL")),
-                            gps_latitude  = self._clean_float(row.get("SENSORGPS_LATITUDE")),
-                            gps_longitude = self._clean_float(row.get("SENSORGPS_LONGITUDE")),
-                        )
-                        .on_conflict_do_nothing(constraint="uq_device_uid_recorded")
-                        .returning(DeviceStatus.reading_id)
-                    )
-                    reading_id = result.scalar()
-
-                    if reading_id is None:          # duplicate timestamp for this user
-                        counters["duplicates"] += 1
-                        continue
-
-                    # ── MotionLog ─────────────────────────────────────────
-                    session.execute(
-                        pg_insert(MotionLog)
-                        .values(
-                            reading_id = reading_id,
-                            accel_x    = self._clean_float(row.get("ACCELEROMETER_X")),
-                            accel_y    = self._clean_float(row.get("ACCELEROMETER_Y")),
-                            accel_z    = self._clean_float(row.get("ACCELEROMETER_Z")),
-                            grav_x     = self._clean_float(row.get("GRAV_X")),
-                            grav_y     = self._clean_float(row.get("GRAV_Y")),
-                            grav_z     = self._clean_float(row.get("GRAV_Z")),
-                            gyro_x     = self._clean_float(row.get("GYROSCOPE_X")),
-                            gyro_y     = self._clean_float(row.get("GYROSCOPE_Y")),
-                            gyro_z     = self._clean_float(row.get("GYROSCOPE_Z")),
-                        )
-                        .on_conflict_do_nothing()
-                    )
-
-                    # ── EnvironmentalLog ──────────────────────────────────
-                    session.execute(
-                        pg_insert(EnvironmentalLog)
-                        .values(
-                            reading_id = reading_id,
-                            light      = self._clean_float(row.get("Light_v")),
-                            mag_x      = self._clean_float(row.get("MAG_X")),
-                            mag_y      = self._clean_float(row.get("MAG_Y")),
-                            mag_z      = self._clean_float(row.get("MAG_Z")),
-                        )
-                        .on_conflict_do_nothing()
-                    )
-
-                    # ── OrientationLog ────────────────────────────────────
-                    session.execute(
-                        pg_insert(OrientationLog)
-                        .values(
-                            reading_id = reading_id,
-                            azimuth    = self._clean_float(row.get("ORIENTATION_AZIMUTH")),
-                            pitch      = self._clean_float(row.get("ORIENTATION_PITCH")),
-                            roll       = self._clean_float(row.get("ORIENTATION_ROLL")),
-                        )
-                        .on_conflict_do_nothing()
-                    )
-
-                    counters["inserted"] += 1
-
-                except Exception as exc:
-                    counters["errors"] += 1
-                    session.rollback()
-                    print(f"  [CSV row {row_num}] ERROR: {exc}")
-                    # Reinitialise session after rollback so remaining rows can proceed
-                    session = self.Session()
-                    known_uids = {uid for (uid,) in session.query(User.uid).all()}
-                    continue
-
-                # ── Batch commit ──────────────────────────────────────────
-                if counters["inserted"] % _BATCH_SIZE == 0:
-                    session.commit()
-                    if progress_cb:
-                        progress_cb(row_num, total)
-
-            session.commit()
-            if progress_cb:
-                progress_cb(total, total)
-
+            parser = DataParser(session)
+            counters = parser.parse_telemetry_from_bytes(file_obj, progress_cb=progress_cb)
         except Exception:
             session.rollback()
             raise

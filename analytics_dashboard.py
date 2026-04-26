@@ -26,8 +26,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from database_manager import DatabaseManager
+from data_parser import DataParser
 from models import DeviceStatus, User
-import seed as _seed_module
 
 # Colour palette — one colour per user, cycles after 10
 _PALETTE = [
@@ -382,9 +382,8 @@ class AnalyticsDashboard:
         """
         Execute the seed ETL pipeline in-process and stream log lines to the UI.
 
-        Delegates to seed.py's load_users() and load_sensors() functions,
-        which use the shared ORM models from models.py.  After completion the
-        user cache is cleared so the Analytics multiselect picks up new UIDs.
+        Uses DataParser directly for ETL. After completion the user cache is
+        cleared so the Analytics multiselect picks up new UIDs.
         """
         log_lines:       list[str] = []
         log_placeholder = st.empty()
@@ -399,7 +398,8 @@ class AnalyticsDashboard:
         try:
             progress.progress(0.05, text="Ensuring database exists…")
             _log("Checking / creating database…")
-            _seed_module.create_database_if_missing()
+            # DatabaseManager.__init__ already created the DB if missing
+            _log("  Database OK")
 
             progress.progress(0.15, text="Creating schema tables…")
             _log("Creating schema (if tables are missing)…")
@@ -411,15 +411,14 @@ class AnalyticsDashboard:
 
             session = self.db_manager.Session()
             try:
-                known_uids = _seed_module.load_users(session, filepath=user_file)
+                parser     = DataParser(session, user_file=user_file, sensor_file=sensor_file)
+                known_uids = parser.parse_users()
                 session.commit()
                 _log(f"  Loaded {len(known_uids)} user(s)")
 
                 progress.progress(0.40, text=f"Loading sensor readings from {sensor_file}…")
                 _log(f"\nLoading sensors: {sensor_file}")
-                _seed_module.load_sensors(
-                    session, known_uids=known_uids, filepath=sensor_file
-                )
+                parser.parse_telemetry(known_uids=known_uids)
                 _log("  Sensor load complete")
 
             except Exception:
