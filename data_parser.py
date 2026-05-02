@@ -20,19 +20,20 @@ _TS_FORMATS = (
     "%m/%d/%Y %H:%M:%S",
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%dT%H:%M:%S",
-    "%d %b %Y %I:%M:%S %p",  # Added for formats like "6 Mar 2022 9:06:22 PM"
+    "%d %b %Y %I:%M:%S %p",
 )
 
-_BATCH_SIZE = 250
+_BATCH_SIZE = 3000
 
 
 class DataParser:
-    def __init__(self, session, user_file="UserInfo.csv", sensor_file="Sensors.csv"):
+    def __init__(self, session, user_file="UserInfo.csv", sensor_file="Sensors.csv", error_file="invalid_rows.csv"):
         self.session     = session
         self.user_file   = user_file
         self.sensor_file = sensor_file
+        self.error_file  = error_file
 
-    # Helpers 
+    #Helpers
 
     @staticmethod
     def _clean_float(val) -> float:
@@ -57,16 +58,9 @@ class DataParser:
 
     @staticmethod
     def _parse_ts(raw: str) -> Optional[datetime]:
-        """
-        Standardizes date strings by cleaning 'a.m.'/'p.m.' indicators
-        and matching against accepted _TS_FORMATS.
-        """
         if not raw:
             return None
-            
         raw = raw.strip()
-        
-        # Standardize "a.m." and "p.m." so Python's %p directive can read them
         clean_raw = raw.replace("a.m.", "AM").replace("p.m.", "PM")
         clean_raw = clean_raw.replace("A.M.", "AM").replace("P.M.", "PM")
 
@@ -77,14 +71,10 @@ class DataParser:
                 continue
         return None
 
-    #  Users 
+    # --- Users ---
 
     def parse_users(self) -> Set[str]:
-        """
-        Read UserInfo CSV and upsert rows into the users table.
-        """
         known_uids: Set[str] = set()
-
         with open(self.user_file, mode="r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -105,25 +95,17 @@ class DataParser:
         self.session.flush()
         return known_uids
 
-    #  Telemetry (file path) 
+    # --- Telemetry Ingestion ---
 
     def parse_telemetry(self, known_uids: Optional[Set[str]] = None) -> None:
-        """
-        Read Sensors CSV from self.sensor_file and persist all readings.
-        """
         with open(self.sensor_file, mode="r", encoding="utf-8-sig") as f:
             self._ingest_rows(csv.DictReader(f), known_uids=known_uids or set())
-
-    #  Telemetry (bytes / upload tab) 
 
     def parse_telemetry_from_bytes(
         self,
         file_obj,
         progress_cb: Optional[Callable[[int, int], None]] = None,
     ) -> Dict[str, int]:
-        """
-        Parse a CSV supplied as a binary file-like object and persist all readings.
-        """
         raw = file_obj.read() if hasattr(file_obj, "read") else file_obj
         text = raw.decode("utf-8-sig")
 
@@ -144,10 +126,7 @@ class DataParser:
             total_rows   = total_rows,
             progress_cb  = progress_cb,
         )
-
         return counters
-
-    #  Core row processor 
 
     def _ingest_rows(
         self,
@@ -157,117 +136,106 @@ class DataParser:
         total_rows:  int = 0,
         progress_cb: Optional[Callable[[int, int], None]] = None,
     ) -> None:
-        """
-        Iterate reader and persist every row.
-        Handles duplicates and creates placeholder users as needed.
-        """
         track = counters is not None
         row_num = 0
 
-        for row in reader:
-            row_num += 1
+        with open(self.error_file, mode="w", encoding="utf-8", newline="") as err_f:
+            writer = None
 
-            try:
-                uid    = str(row.get("UID", "Unknown")).strip()
-                ts_raw = (row.get("Date_time") or row.get("timestamp") or "").strip()
+            for row in reader:
+                row_num += 1
+                
+                if writer is None:
+                    writer = csv.DictWriter(err_f, fieldnames=row.keys())
+                    writer.writeheader()
 
-                recorded_at = self._parse_ts(ts_raw) if ts_raw else None
+                try:
+                    # START SUB-TRANSACTION: One row error won't kill the batch
+                    with self.session.begin_nested():
+                        uid    = str(row.get("UID", "Unknown")).strip()
+                        ts_raw = (row.get("Date_time") or row.get("timestamp") or "").strip()
+                        recorded_at = self._parse_ts(ts_raw) if ts_raw else None
 
-                if uid not in known_uids:
-                    self.session.execute(
-                        pg_insert(User).values(
-                            uid        = uid,
-                            age_range  = "0",
-                            gender     = "0",
-                            university = "0",
-                        ).on_conflict_do_nothing()
-                    )
-                    known_uids.add(uid)
-                    if track:
-                        counters["new_users"] += 1
+                        if not recorded_at:
+                            raise ValueError(f"Missing/unparseable timestamp: '{ts_raw}'")
 
-                ds_stmt = (
-                    pg_insert(DeviceStatus)
-                    .values(
-                        uid           = uid,
-                        recorded_at   = recorded_at,
-                        battery_level = self._clean_int(row.get("BATTERY_LEVEL")),
-                        gps_latitude  = self._clean_float(
-                            row.get("SENSORGPS_LATITUDE") or row.get("lat")
-                        ),
-                        gps_longitude = self._clean_float(
-                            row.get("SENSORGPS_LONGITUDE") or row.get("lon")
-                        ),
-                    )
-                    .on_conflict_do_nothing()
-                    .returning(DeviceStatus.reading_id)
-                )
+                        if uid not in known_uids:
+                            self.session.execute(
+                                pg_insert(User).values(
+                                    uid=uid, age_range="0", gender="0", university="0"
+                                ).on_conflict_do_nothing()
+                            )
+                            known_uids.add(uid)
+                            if track: counters["new_users"] += 1
 
-                res = self.session.execute(ds_stmt)
-                rid = res.scalar()
-
-                if rid is None:
-                    if track:
-                        counters["duplicates"] += 1
-                else:
-                    self.session.execute(
-                        pg_insert(MotionLog)
-                        .values(
-                            reading_id = rid,
-                            accel_x    = self._clean_float(row.get("ACCELEROMETER_X")),
-                            accel_y    = self._clean_float(row.get("ACCELEROMETER_Y")),
-                            accel_z    = self._clean_float(row.get("ACCELEROMETER_Z")),
-                            grav_x     = self._clean_float(row.get("GRAV_X")),
-                            grav_y     = self._clean_float(row.get("GRAV_Y")),
-                            grav_z     = self._clean_float(row.get("GRAV_Z")),
-                            gyro_x     = self._clean_float(row.get("GYROSCOPE_X")),
-                            gyro_y     = self._clean_float(row.get("GYROSCOPE_Y")),
-                            gyro_z     = self._clean_float(row.get("GYROSCOPE_Z")),
+                        ds_stmt = (
+                            pg_insert(DeviceStatus)
+                            .values(
+                                uid           = uid,
+                                recorded_at   = recorded_at,
+                                battery_level = self._clean_int(row.get("BATTERY_LEVEL")),
+                                gps_latitude  = self._clean_float(row.get("SENSORGPS_LATITUDE") or row.get("lat")),
+                                gps_longitude = self._clean_float(row.get("SENSORGPS_LONGITUDE") or row.get("lon")),
+                            )
+                            .on_conflict_do_nothing()
+                            .returning(DeviceStatus.reading_id)
                         )
-                        .on_conflict_do_nothing()
-                    )
 
-                    self.session.execute(
-                        pg_insert(EnvironmentalLog)
-                        .values(
-                            reading_id = rid,
-                            light      = self._clean_float(row.get("Light_v")),
-                            mag_x      = self._clean_float(row.get("MAG_X")),
-                            mag_y      = self._clean_float(row.get("MAG_Y")),
-                            mag_z      = self._clean_float(row.get("MAG_Z")),
-                        )
-                        .on_conflict_do_nothing()
-                    )
+                        res = self.session.execute(ds_stmt)
+                        rid = res.scalar()
 
-                    self.session.execute(
-                        pg_insert(OrientationLog)
-                        .values(
-                            reading_id = rid,
-                            azimuth    = self._clean_float(row.get("ORIENTATION_AZIMUTH")),
-                            pitch      = self._clean_float(row.get("ORIENTATION_PITCH")),
-                            roll       = self._clean_float(row.get("ORIENTATION_ROLL")),
-                        )
-                        .on_conflict_do_nothing()
-                    )
+                        if rid is None:
+                            if track: counters["duplicates"] += 1
+                            writer.writerow(row)
+                        else:
+                            # Log linked sensor data
+                            self.session.execute(
+                                pg_insert(MotionLog).values(
+                                    reading_id=rid,
+                                    accel_x=self._clean_float(row.get("ACCELEROMETER_X")),
+                                    accel_y=self._clean_float(row.get("ACCELEROMETER_Y")),
+                                    accel_z=self._clean_float(row.get("ACCELEROMETER_Z")),
+                                    grav_x=self._clean_float(row.get("GRAV_X")),
+                                    grav_y=self._clean_float(row.get("GRAV_Y")),
+                                    grav_z=self._clean_float(row.get("GRAV_Z")),
+                                    gyro_x=self._clean_float(row.get("GYROSCOPE_X")),
+                                    gyro_y=self._clean_float(row.get("GYROSCOPE_Y")),
+                                    gyro_z=self._clean_float(row.get("GYROSCOPE_Z")),
+                                ).on_conflict_do_nothing()
+                            )
+                            self.session.execute(
+                                pg_insert(EnvironmentalLog).values(
+                                    reading_id=rid,
+                                    light=self._clean_float(row.get("Light_v")),
+                                    mag_x=self._clean_float(row.get("MAG_X")),
+                                    mag_y=self._clean_float(row.get("MAG_Y")),
+                                    mag_z=self._clean_float(row.get("MAG_Z")),
+                                ).on_conflict_do_nothing()
+                            )
+                            self.session.execute(
+                                pg_insert(OrientationLog).values(
+                                    reading_id=rid,
+                                    azimuth=self._clean_float(row.get("ORIENTATION_AZIMUTH")),
+                                    pitch=self._clean_float(row.get("ORIENTATION_PITCH")),
+                                    roll=self._clean_float(row.get("ORIENTATION_ROLL")),
+                                ).on_conflict_do_nothing()
+                            )
+                            if track: counters["inserted"] += 1
 
-                    if track:
-                        counters["inserted"] += 1
-
-            except Exception as exc:
-                print(f"  [row {row_num}] ERROR — skipped: {exc}", file=sys.stderr)
-                self.session.rollback()
-                if track:
-                    counters["errors"] += 1
-                continue
-
-            if row_num % _BATCH_SIZE == 0:
-                self.session.commit()
-                if progress_cb and total_rows:
-                    progress_cb(row_num, total_rows)
+                except Exception as exc:
+                    # Context manager automatically rolled back the savepoint here
+                    writer.writerow(row)
+                    print(f"  [row {row_num}] ERROR — exported to {self.error_file}: {exc}", file=sys.stderr)
+                    if track: counters["errors"] += 1
+                    continue
+                
+                # Batch commit for performance
+                if row_num % _BATCH_SIZE == 0:
+                    self.session.commit()
+                    if progress_cb and total_rows: progress_cb(row_num, total_rows)
 
         self.session.commit()
-        if progress_cb and total_rows:
-            progress_cb(row_num, total_rows)
+        if progress_cb and total_rows: progress_cb(row_num, total_rows)
 
     def run_etl(self) -> None:
         """Convenience wrapper: parse users then telemetry in one call."""

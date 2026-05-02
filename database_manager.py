@@ -95,9 +95,7 @@ class DatabaseManager:
         """
         Persist a list of ORM objects in a single transaction.
 
-        Raises
-        ------
-        Exception
+        Raises Exception
             Re-raises any database error after rolling back.
         """
         session: Session = self.Session()
@@ -139,8 +137,7 @@ class DatabaseManager:
         disable the seed button.  A database is considered "populated"
         when at least one User row and one DeviceStatus row exist.
 
-        Returns
-        -------
+        Returns a
         dict with keys:
             user_count         : int
             device_status_count: int

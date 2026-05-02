@@ -376,17 +376,17 @@ class AnalyticsDashboard:
             log_lines.append(msg)
             log_placeholder.code("\n".join(log_lines), language="text")
 
-        st.info("Starting seed — this may take a few minutes for large CSV files…")
+        st.info("Starting seed! This may take a few minutes for large CSV files…")
         progress = st.progress(0, text="Initialising…")
 
         try:
             progress.progress(0.05, text="Ensuring database exists…")
             _log("Checking / creating database…")
-            # DatabaseManager.__init__ already created the DB if missing
+            # DatabaseManager.init already created the DB if missing
             _log("  Database OK")
 
             progress.progress(0.15, text="Creating schema tables…")
-            _log("Creating schema (if tables are missing)…")
+            _log("Creating schema…")
             self.db_manager.init_schema()
             _log("  Schema OK")
 
@@ -403,11 +403,11 @@ class AnalyticsDashboard:
                 f"✅ Seed complete!  "
                 f"**{result['users_loaded']}** user(s) loaded, "
                 f"**{result['inserted']:,}** reading(s) inserted.  "
-                "Switch to the **📊 Analytics** tab to start exploring your data."
+                "Switch to the **📊 Analytics** tab to start exploring data."
             )
 
             if result["errors"] > 0:
-                st.warning(f"⚠️ {result['errors']} row(s) failed to insert — check the terminal for details.")
+                st.warning(f"⚠️ {result['errors']} row(s) failed to insert, check the terminal for details.")
 
             # Clear cached user list so multiselect reflects the new UIDs
             st.session_state.pop("all_users", None)
@@ -437,11 +437,10 @@ class AnalyticsDashboard:
         Build sidebar controls: multiselect from DB users + optional date range.
 
         The date range section is toggled by a radio button:
-          • "All time"    — returns (None, None), query fetches every row for the user
-          • "Date range"  — shows date pickers and returns (start_dt, end_dt)
+           "All time"   returns (None, None), query fetches every row for the user
+           "Date range" shows date pickers and returns (start_dt, end_dt)
 
         Returns
-        -------
         (selected_uids, start_datetime_or_None, end_datetime_or_None)
         """
         st.sidebar.header("🔍 Query Controls")
@@ -505,7 +504,7 @@ class AnalyticsDashboard:
         """Render all sensor chart sections, one trace per selected user."""
 
         # Battery 
-        st.subheader("🔋 Battery Level")
+        st.subheader("Battery Level")
         fig = go.Figure()
         for i, (uid, rows) in enumerate(user_data.items()):
             fig.add_trace(go.Scatter(
@@ -520,28 +519,28 @@ class AnalyticsDashboard:
         st.divider()
 
         # Accelerometer 
-        st.subheader("🏃 Accelerometer  (X / Y / Z)")
+        st.subheader("Accelerometer  (X / Y / Z)")
         self._render_axis_columns(user_data, "motion_log",
                                   [("accel_x","X"), ("accel_y","Y"), ("accel_z","Z")],
                                   "Accel", "m/s²")
         st.divider()
 
         # Gravity
-        st.subheader("⬇️  Gravity Vector  (X / Y / Z)")
+        st.subheader("Gravity Vector  (X / Y / Z)")
         self._render_axis_columns(user_data, "motion_log",
                                   [("grav_x","X"), ("grav_y","Y"), ("grav_z","Z")],
                                   "Gravity", "m/s²")
         st.divider()
 
         # Gyroscope
-        st.subheader("🌀 Gyroscope  (X / Y / Z)")
+        st.subheader("Gyroscope  (X / Y / Z)")
         self._render_axis_columns(user_data, "motion_log",
                                   [("gyro_x","X"), ("gyro_y","Y"), ("gyro_z","Z")],
                                   "Gyro", "rad/s")
         st.divider()
 
         # Orientation 
-        st.subheader("🧭 Orientation  (Azimuth / Pitch / Roll)")
+        st.subheader("Orientation  (Azimuth / Pitch / Roll)")
         self._render_axis_columns(user_data, "orientation_log",
                                   [("azimuth","Azimuth"), ("pitch","Pitch"), ("roll","Roll")],
                                   "", "Degrees (°)")
