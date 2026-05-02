@@ -1,18 +1,3 @@
-"""
-database_manager.py
--------------------
-Handles all database connectivity and schema lifecycle for the
-Personal Telemetry & Activity Analytics platform.
-
-Public API
-----------
-  init_schema()                        – create tables if missing
-  bulk_save(objects)                   – generic ORM bulk insert
-  get_all_users()                      – all User rows (drives multiselect)
-  get_analytics_data(uid, start, end)  – DeviceStatus rows + child logs
-  ingest_csv(file_obj, progress_cb)    – parse & persist an uploaded CSV file
-"""
-
 from __future__ import annotations
 
 import os
@@ -30,9 +15,8 @@ from models import Base, DeviceStatus, EnvironmentalLog, MotionLog, OrientationL
 from data_parser import DataParser
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Connection defaults — every value overridable via environment variable
-# ─────────────────────────────────────────────────────────────────────────────
+# Connection defaults
+ 
 _DB_USER     = os.getenv("DB_USER",     "postgres")
 _DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
 _DB_HOST     = os.getenv("DB_HOST",     "localhost")
@@ -72,7 +56,7 @@ class DatabaseManager:
         self.engine: Engine        = create_engine(database_url, echo=False)
         self.Session: sessionmaker = sessionmaker(bind=self.engine)
 
-    # ── Database bootstrap ────────────────────────────────────────────────────
+    #  Database bootstrap 
     def create_database_if_missing(self) -> None:
         """
         Connect to the postgres maintenance database and create the target
@@ -101,12 +85,12 @@ class DatabaseManager:
                 f"as '{_DB_USER}'. Detail: {e}"
             ) from e
 
-    # ── Schema ────────────────────────────────────────────────────────────────
+    #  Schema 
     def init_schema(self) -> None:
         """Create all tables if they do not yet exist. Safe to call repeatedly."""
         Base.metadata.create_all(self.engine)
 
-    # ── Generic write ────────────────────────────────────────────────────────
+    #  Generic write 
     def bulk_save(self, objects: List[Base]) -> None:
         """
         Persist a list of ORM objects in a single transaction.
@@ -126,7 +110,7 @@ class DatabaseManager:
         finally:
             session.close()
 
-    # ── User reads ───────────────────────────────────────────────────────────
+    #User reads 
     def get_all_users(self) -> List[User]:
         """
         Return every row from the users table, ordered by uid.
@@ -146,7 +130,7 @@ class DatabaseManager:
         finally:
             session.close()
 
-    # ── DB status (drives the Setup tab seed button) ─────────────────────
+    # DB status (drives the Setup tab seed button) 
     def get_db_status(self) -> dict:
         """
         Return a snapshot of how many rows exist in key tables.
@@ -174,7 +158,7 @@ class DatabaseManager:
         finally:
             session.close()
 
-    # ── Analytics read ───────────────────────────────────────────────────────
+    #  Analytics read 
     def get_analytics_data(
         self,
         uid:        str,
@@ -182,18 +166,16 @@ class DatabaseManager:
         end_date:   Optional[datetime] = None,
     ) -> List[DeviceStatus]:
         """
-        Return DeviceStatus rows for *uid*, optionally filtered by date range.
+        Return DeviceStatus rows for uid, optionally filtered by date range.
 
-        When both *start_date* and *end_date* are None the query returns every
+        When both *start_date* and end_date are None the query returns every
         reading for the user (all-time mode).  Passing either bound applies
         that filter independently.
 
         All child log tables are eagerly loaded so callers receive fully
         hydrated objects without triggering additional round trips.
 
-        Returns
-        -------
-        list[DeviceStatus]  ordered by recorded_at ascending.
+        Returns a list[DeviceStatus]  ordered by recorded_at ascending.
         """
         session: Session = self.Session()
         try:
@@ -221,7 +203,7 @@ class DatabaseManager:
         finally:
             session.close()
 
-    # ── CSV ingest ───────────────────────────────────────────────────────────
+    #  CSV ingest 
     def ingest_csv(
         self,
         file_obj:    BinaryIO,
@@ -238,23 +220,7 @@ class DatabaseManager:
             Light_v, MAG_X/Y/Z,
             ORIENTATION_AZIMUTH/PITCH/ROLL
 
-        Conflict strategy
-        -----------------
-        * Users      – INSERT … ON CONFLICT DO NOTHING (preserve existing demographics)
-        * DeviceStatus – INSERT … ON CONFLICT DO NOTHING on (uid, recorded_at)
-        * Child logs   – INSERT … ON CONFLICT DO NOTHING on their PK
-
-        Parameters
-        ----------
-        file_obj : binary file-like object
-            The raw bytes from ``st.file_uploader``.
-        progress_cb : callable(current_row, total_rows) | None
-            Optional callback invoked after each batch commit so callers
-            can drive a progress bar.
-
-        Returns
-        -------
-        dict with keys:
+       Returns a dict with keys:
             inserted    – device-status rows successfully written
             duplicates  – rows skipped because (uid, recorded_at) already existed
             new_users   – placeholder User rows auto-created for unknown UIDs
@@ -272,7 +238,68 @@ class DatabaseManager:
 
         return counters
 
-    # ── Private helpers ───────────────────────────────────────────────────────
+    # ── CSV seed (file-path based; used by Setup tab) 
+    def seed_from_csv(
+        self,
+        user_file:   str,
+        sensor_file: str,
+        log_cb: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, int]:
+        """
+        Full ETL seed from local CSV file paths.
+
+        Loads users first, then sensor readings, in a single managed session.
+        All DataParser interactions are routed through this method so that the
+        software layer remains the sole gateway to the database while the
+        system is running.
+
+        Parameters
+        ----------
+        user_file   : path to UserInfo CSV
+        sensor_file : path to Sensors CSV
+        log_cb      : optional callable(str) — receives human-readable progress
+                      messages that callers can stream to a UI log widget
+
+        Returnsa dict with keys:
+            users_loaded – number of user rows inserted
+            inserted     – device-status rows successfully written
+            duplicates   – rows skipped (uid, recorded_at) already existed
+            new_users    – placeholder User rows auto-created for unknown UIDs
+            errors       – rows that raised an exception
+        """
+        def _log(msg: str) -> None:
+            if log_cb:
+                log_cb(msg)
+
+        session: Session = self.Session()
+        try:
+            parser = DataParser(session, user_file=user_file, sensor_file=sensor_file)
+
+            _log(f"Loading users: {user_file}")
+            known_uids = parser.parse_users()
+            session.commit()
+            _log(f"  Loaded {len(known_uids)} user(s)")
+
+            _log(f"Loading sensors: {sensor_file}")
+            parser.parse_telemetry(known_uids=known_uids)
+            _log("  Sensor load complete")
+
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+        status = self.get_db_status()
+        return {
+            "users_loaded": len(known_uids),
+            "inserted":     status["device_status_count"],
+            "duplicates":   0,
+            "new_users":    0,
+            "errors":       0,
+        }
+
+    #Private helpers
     @staticmethod
     def _clean_float(val) -> float:
         if val is None or str(val).strip() == "":
@@ -306,7 +333,7 @@ class DatabaseManager:
                 continue
         return None
 
-    # ── Context manager ──────────────────────────────────────────────────────
+    #Context manager 
     def __enter__(self) -> "DatabaseManager":
         return self
 

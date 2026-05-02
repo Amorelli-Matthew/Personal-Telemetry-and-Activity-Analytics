@@ -1,19 +1,3 @@
-"""
-analytics_dashboard.py
------------------------
-Streamlit-based Analytics Dashboard for the Personal Telemetry platform.
-
-Layout
-------
-  Tab 1 – 📊 Analytics   : multiselect users, date range, all sensor charts + summary table
-  Tab 2 – 📤 Upload CSV  : file uploader, column validation, live progress bar, result report
-  Tab 3 – ⚙️  Setup      : seed the database from local CSV files; button greys out once populated
-
-Usage
------
-    streamlit run analytics_dashboard.py
-"""
-
 from __future__ import annotations
 
 import io
@@ -26,10 +10,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from database_manager import DatabaseManager
-from data_parser import DataParser
 from models import DeviceStatus, User
 
-# Colour palette — one colour per user, cycles after 10
+# Colour palette  one colour per user, cycles after 10
 _PALETTE = [
     "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
     "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
@@ -54,7 +37,7 @@ class AnalyticsDashboard:
     Wraps the entire Streamlit UI and Plotly visualisation layer.
 
     Attributes
-    ----------
+    
     db_manager  : DatabaseManager
     sensor_file : str  – reserved for future re-seed hooks
     """
@@ -107,7 +90,7 @@ class AnalyticsDashboard:
         elif start_dt is not None and end_dt is not None:
             date_label = f"{start_dt.date()} → {end_dt.date()}"
         else:
-            return  # start > end edge case — sidebar already shows error
+            return  # start > end edge case  sidebar already shows error
 
         user_data: Dict[str, List[DeviceStatus]] = {}
         with st.spinner(f"Querying database for {len(selected_uids)} user(s) ({date_label})…"):
@@ -128,7 +111,7 @@ class AnalyticsDashboard:
         self._display_plots(user_data)
         self._display_summary_table(user_data, all_users)
 
-    # Tab 2 — Upload CSV
+    # Tab 2  Upload CSV
     def _render_upload_tab(self) -> None:
         st.header("Upload Sensor CSV")
         st.write(
@@ -137,7 +120,7 @@ class AnalyticsDashboard:
             "skipped so re-uploads are always safe."
         )
 
-        # ── Expected format reference ─────────────────────────────────────
+        # Expected format reference 
         with st.expander("📋  Expected column format", expanded=False):
             st.code(
                 "UID,ACCELEROMETER_X,ACCELEROMETER_Y,ACCELEROMETER_Z,"
@@ -154,7 +137,7 @@ class AnalyticsDashboard:
 
         st.divider()
 
-        # ── File uploader ─────────────────────────────────────────────────
+        # File uploader 
         uploaded_file = st.file_uploader(
             label = "Choose a CSV file",
             type  = ["csv"],
@@ -165,7 +148,7 @@ class AnalyticsDashboard:
             st.info("No file selected yet.")
             return
 
-        # ── Read & validate ───────────────────────────────────────────────
+        # Read & validate 
         try:
             raw_bytes = uploaded_file.read()
             preview_df = pd.read_csv(io.BytesIO(raw_bytes), nrows=5, encoding="utf-8-sig")
@@ -276,9 +259,7 @@ class AnalyticsDashboard:
                 f"**{result['errors']}** row(s) failed to insert. Check the terminal / logs for details."
             )
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Tab 3 — Setup
-    # ─────────────────────────────────────────────────────────────────────────
     def _render_setup_tab(self) -> None:
         """
         One-time database seeding UI.
@@ -297,7 +278,7 @@ class AnalyticsDashboard:
         )
         st.divider()
 
-        # ── Check current DB state ────────────────────────────────────────
+        # Check current DB state ────────────────────────────────────────
         try:
             status = self.db_manager.get_db_status()
         except Exception as exc:
@@ -306,7 +287,7 @@ class AnalyticsDashboard:
 
         already_populated = status["is_populated"]
 
-        # ── Status metrics 
+        # Status metrics 
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("Users in DB",    status["user_count"])
         col_b.metric("Readings in DB", f'{status["device_status_count"]:,}')
@@ -382,8 +363,11 @@ class AnalyticsDashboard:
         """
         Execute the seed ETL pipeline in-process and stream log lines to the UI.
 
-        Uses DataParser directly for ETL. After completion the user cache is
-        cleared so the Analytics multiselect picks up new UIDs.
+        All database interactions are routed through DatabaseManager.seed_from_csv()
+        so the software layer remains the sole gateway to the database while the
+        system is running (satisfies Software Requirement 3).
+        After completion the user cache is cleared so the Analytics multiselect
+        picks up new UIDs.
         """
         log_lines:       list[str] = []
         log_placeholder = st.empty()
@@ -407,31 +391,23 @@ class AnalyticsDashboard:
             _log("  Schema OK")
 
             progress.progress(0.25, text=f"Loading users from {user_file}…")
-            _log(f"\nLoading users: {user_file}")
 
-            session = self.db_manager.Session()
-            try:
-                parser     = DataParser(session, user_file=user_file, sensor_file=sensor_file)
-                known_uids = parser.parse_users()
-                session.commit()
-                _log(f"  Loaded {len(known_uids)} user(s)")
-
-                progress.progress(0.40, text=f"Loading sensor readings from {sensor_file}…")
-                _log(f"\nLoading sensors: {sensor_file}")
-                parser.parse_telemetry(known_uids=known_uids)
-                _log("  Sensor load complete")
-
-            except Exception:
-                session.rollback()
-                raise
-            finally:
-                session.close()
+            result = self.db_manager.seed_from_csv(
+                user_file   = user_file,
+                sensor_file = sensor_file,
+                log_cb      = _log,
+            )
 
             progress.progress(1.0, text="Done!")
             st.success(
-                "✅ Seed complete! Switch to the **📊 Analytics** tab "
-                "to start exploring your data."
+                f"✅ Seed complete!  "
+                f"**{result['users_loaded']}** user(s) loaded, "
+                f"**{result['inserted']:,}** reading(s) inserted.  "
+                "Switch to the **📊 Analytics** tab to start exploring your data."
             )
+
+            if result["errors"] > 0:
+                st.warning(f"⚠️ {result['errors']} row(s) failed to insert — check the terminal for details.")
 
             # Clear cached user list so multiselect reflects the new UIDs
             st.session_state.pop("all_users", None)
@@ -441,9 +417,7 @@ class AnalyticsDashboard:
             st.error(f"Seed failed: {exc}")
             _log(f"\nFATAL ERROR: {exc}")
 
-    # ─────────────────────────────────────────────────────────────────────────
     # DB helpers
-    # ─────────────────────────────────────────────────────────────────────────
     def _load_users_cached(self) -> List[User]:
         """Fetch all users once per session; cache in session_state."""
         if "all_users" not in st.session_state:
@@ -490,7 +464,7 @@ class AnalyticsDashboard:
 
         st.sidebar.divider()
 
-        # ── Date range toggle ─────────────────────────────────────────────
+        # Date range toggle 
         st.sidebar.subheader("📅 Date Range")
         date_mode = st.sidebar.radio(
             label     = "Filter by date?",
@@ -530,7 +504,7 @@ class AnalyticsDashboard:
     def _display_plots(self, user_data: Dict[str, List[DeviceStatus]]) -> None:
         """Render all sensor chart sections, one trace per selected user."""
 
-        # ── Battery ──────────────────────────────────────────────────────
+        # Battery 
         st.subheader("🔋 Battery Level")
         fig = go.Figure()
         for i, (uid, rows) in enumerate(user_data.items()):
@@ -695,9 +669,7 @@ class AnalyticsDashboard:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Streamlit entry-point
-# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     db = DatabaseManager()
     db.init_schema()

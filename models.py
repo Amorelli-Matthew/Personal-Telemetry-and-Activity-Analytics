@@ -1,13 +1,3 @@
-"""
-models.py
----------
-SQLAlchemy ORM models for the Personal Telemetry & Activity Analytics platform.
-Matches the 5-table ERD (3NF):
-    Users  →  Device_Status  →  Motion_Logs
-                              →  Environmental_Logs
-                              →  Orientation_Logs
-"""
-
 from __future__ import annotations
 
 from sqlalchemy import (
@@ -19,9 +9,7 @@ from sqlalchemy.orm import declarative_base, relationship
 Base = declarative_base()
 
 
-# ─────────────────────────────────────────────
 # Users
-# ─────────────────────────────────────────────
 class User(Base):
     """
     Stores static demographic information for each participant.
@@ -45,9 +33,7 @@ class User(Base):
         return f"<User uid={self.uid!r} age={self.age_range!r}>"
 
 
-# ─────────────────────────────────────────────
 # Device Status  (central fact table)
-# ─────────────────────────────────────────────
 class DeviceStatus(Base):
     """
     One row per sensor snapshot.
@@ -97,9 +83,7 @@ class DeviceStatus(Base):
         )
 
 
-# ─────────────────────────────────────────────
 # Motion Logs  (accelerometer + gravity + gyro)
-# ─────────────────────────────────────────────
 class MotionLog(Base):
     """
     Accelerometer, gravity vector, and gyroscope readings.
@@ -133,9 +117,7 @@ class MotionLog(Base):
         return f"<MotionLog reading_id={self.reading_id}>"
 
 
-# ─────────────────────────────────────────────
 # Environmental Logs  (light + magnetometer)
-# ─────────────────────────────────────────────
 class EnvironmentalLog(Base):
     """
     Ambient light sensor and 3-axis magnetometer readings.
@@ -159,9 +141,7 @@ class EnvironmentalLog(Base):
         return f"<EnvironmentalLog reading_id={self.reading_id} light={self.light}>"
 
 
-# ─────────────────────────────────────────────
 # Orientation Logs  (azimuth / pitch / roll)
-# ─────────────────────────────────────────────
 class OrientationLog(Base):
     """
     Device orientation derived from the sensor fusion algorithm.
@@ -174,9 +154,9 @@ class OrientationLog(Base):
         Integer, ForeignKey("device_status.reading_id"), primary_key=True
     )
 
-    azimuth = Column(Numeric(12, 7))   # compass heading  (°)
-    pitch   = Column(Numeric(12, 7))   # front-back tilt  (°)
-    roll    = Column(Numeric(12, 7))   # left-right tilt  (°)
+    azimuth = Column(Numeric(12, 7))   # compass heading  
+    pitch   = Column(Numeric(12, 7))   # front-back tilt  
+    roll    = Column(Numeric(12, 7))   # left-right tilt  
 
     device_status = relationship("DeviceStatus", back_populates="orientation_log")
 

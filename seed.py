@@ -1,18 +1,3 @@
-"""
-seed.py
--------
-ETL entry-point for the Personal Telemetry & Activity Analytics platform.
-
-Delegates all CSV parsing to DataParser (data_parser.py) so the ETL logic
-lives in exactly one place.
-
-Usage
------
-    python seed.py                              # default CSV paths
-    python seed.py UserInfo.csv Sensors.csv     # explicit paths
-    DB_USER=myuser DB_PASSWORD=secret python seed.py
-"""
-
 from __future__ import annotations
 
 import os
@@ -21,7 +6,7 @@ import sys
 from data_parser import DataParser
 from database_manager import DatabaseManager
 
-# ── Database connection — every value overridable via environment variable ────
+# Database connection 
 DB_USER     = os.getenv("DB_USER",     "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
 DB_HOST     = os.getenv("DB_HOST",     "localhost")
