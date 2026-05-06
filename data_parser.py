@@ -71,7 +71,7 @@ class DataParser:
                 continue
         return None
 
-    # --- Users ---
+    # Users
 
     def parse_users(self) -> Set[str]:
         known_uids: Set[str] = set()
@@ -95,7 +95,7 @@ class DataParser:
         self.session.flush()
         return known_uids
 
-    # --- Telemetry Ingestion ---
+    # Telemetry Ingestion
 
     def parse_telemetry(self, known_uids: Optional[Set[str]] = None) -> None:
         with open(self.sensor_file, mode="r", encoding="utf-8-sig") as f:

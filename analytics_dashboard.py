@@ -74,7 +74,7 @@ class AnalyticsDashboard:
         with tab_setup:
             self._render_setup_tab()
 
-    # Tab 1 — Analytics
+    # Tab 1 Analytics
     def _render_analytics_tab(self) -> None:
         all_users = self._load_users_cached()
 
@@ -103,7 +103,7 @@ class AnalyticsDashboard:
             return
 
         counts_md = "  |  ".join(
-            f"`{uid}` — **{len(rows):,}** readings"
+            f"`{uid}` **{len(rows):,}** readings"
             for uid, rows in user_data.items()
         )
         st.success(f"Loaded **{total:,}** total readings   |   {counts_md}")
@@ -157,7 +157,7 @@ class AnalyticsDashboard:
             return
 
         st.subheader("Preview  (first 5 rows)")
-        st.dataframe(preview_df, use_container_width=True)
+        st.dataframe(preview_df, width='stretch')
 
         # Check for missing required columns
         file_cols   = set(preview_df.columns)
@@ -190,7 +190,7 @@ class AnalyticsDashboard:
         st.divider()
 
         #Load button 
-        if st.button("⬆️  Load into Database", type="primary", use_container_width=True):
+        if st.button("⬆️  Load into Database", type="primary", width='stretch'):
             self._run_ingest(raw_bytes, uploaded_file.name, total_rows)
 
     # Ingest runner (called from upload tab after button press)
@@ -230,7 +230,7 @@ class AnalyticsDashboard:
 
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("✅  Inserted",    result["inserted"],   help="New device-status rows written to the DB.")
-        r2.metric("⏭️  Duplicates",  result["duplicates"], help="Rows skipped — (UID, timestamp) already existed.")
+        r2.metric("⏭️  Duplicates",  result["duplicates"], help="Rows skipped  (UID, timestamp) already existed.")
         r3.metric("👤  New Users",   result["new_users"],  help="Placeholder user rows auto-created for unknown UIDs.")
         r4.metric("❌  Errors",      result["errors"],     help="Rows that raised an exception during processing.")
 
@@ -259,7 +259,7 @@ class AnalyticsDashboard:
                 f"**{result['errors']}** row(s) failed to insert. Check the terminal / logs for details."
             )
 
-    # Tab 3 — Setup
+    # Tab 3  Setup
     def _render_setup_tab(self) -> None:
         """
         One-time database seeding UI.
@@ -273,12 +273,12 @@ class AnalyticsDashboard:
         st.write(
             "Use this tab to seed the database from the Kaggle Embedded "
             "Smartphone Sensor Dataset CSV files.  The seed operation only "
-            "needs to run once — the button is disabled automatically once "
+            "needs to run once the button is disabled automatically once "
             "data exists."
         )
         st.divider()
 
-        # Check current DB state ────────────────────────────────────────
+        # Check current DB state 
         try:
             status = self.db_manager.get_db_status()
         except Exception as exc:
@@ -346,9 +346,9 @@ class AnalyticsDashboard:
             btn_label,
             type                = "primary",
             disabled            = already_populated or not paths_ok,
-            use_container_width = True,
+            width='stretch',
             help                = (
-                "Disabled — database is already populated."
+                "Disabled  database is already populated."
                 if already_populated
                 else "Provide valid CSV paths above to enable."
                 if not paths_ok
@@ -365,7 +365,7 @@ class AnalyticsDashboard:
 
         All database interactions are routed through DatabaseManager.seed_from_csv()
         so the software layer remains the sole gateway to the database while the
-        system is running (satisfies Software Requirement 3).
+        system is running.
         After completion the user cache is cleared so the Analytics multiselect
         picks up new UIDs.
         """
@@ -403,7 +403,7 @@ class AnalyticsDashboard:
                 f"✅ Seed complete!  "
                 f"**{result['users_loaded']}** user(s) loaded, "
                 f"**{result['inserted']:,}** reading(s) inserted.  "
-                "Switch to the **📊 Analytics** tab to start exploring data."
+                "Refresh this page and switch to the **📊 Analytics** tab to start exploring data."
             )
 
             if result["errors"] > 0:
@@ -458,7 +458,7 @@ class AnalyticsDashboard:
                 help        = "Choose one or more users to compare. Data is pulled live from the database.",
             )
         else:
-            st.sidebar.warning("No users found in the database. Run seed.py or upload a CSV first.")
+            st.sidebar.warning("No users found in the database. Go to Setup.")
             selected_uids = []
 
         st.sidebar.divider()
@@ -488,8 +488,28 @@ class AnalyticsDashboard:
             else:
                 start_dt = datetime.combine(start_date, datetime.min.time())
                 end_dt   = datetime.combine(end_date,   datetime.max.time())
-        # else:
-        #     st.sidebar.caption("Showing all available readings")
+        else:
+             st.sidebar.caption("Showing all available readings")
+
+        if st.sidebar.button("⚠️ Wipe Database", type="primary"):
+                st.session_state["confirm_wipe"] = True
+
+        if st.session_state.get("confirm_wipe"):
+                    
+                    st.sidebar.warning("This will delete all data. Are you sure?")
+                    col1, col2 = st.columns(2)
+                    if col1.button("Yes, wipe it"):
+                        self.db_manager.wipe_db()
+                        st.session_state["confirm_wipe"] = False
+                        st.success("Database wiped.")
+
+                        #clear users 
+                        st.session_state.pop("all_users", None)  # add this
+                        st.session_state["confirm_wipe"] = False
+                        st.rerun()
+                    if col2.button("Cancel"):
+                        st.session_state["confirm_wipe"] = False
+                        st.rerun()
 
         st.sidebar.divider()
         st.sidebar.caption(
@@ -515,7 +535,7 @@ class AnalyticsDashboard:
                 line = dict(color=_PALETTE[i % len(_PALETTE)]),
             ))
         self._apply_layout(fig, "Battery Drain Over Time", "Battery %")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         st.divider()
 
         # Accelerometer 
@@ -561,7 +581,7 @@ class AnalyticsDashboard:
                 line = dict(color=_PALETTE[i % len(_PALETTE)]),
             ))
         self._apply_layout(fig_light, "Ambient Light", "Lux")
-        left_col.plotly_chart(fig_light, use_container_width=True)
+        left_col.plotly_chart(fig_light, width='stretch')
 
         mag_sub = right_col.columns(3)
         for sub_col, (attr, label) in zip(mag_sub,
@@ -577,7 +597,7 @@ class AnalyticsDashboard:
                     line = dict(color=_PALETTE[i % len(_PALETTE)]),
                 ))
             self._apply_layout(fig, f"Mag {label}", "μT", compact=True)
-            sub_col.plotly_chart(fig, use_container_width=True)
+            sub_col.plotly_chart(fig, width='stretch')
 
     def _render_axis_columns(
         self,
@@ -602,7 +622,7 @@ class AnalyticsDashboard:
                 ))
             title = f"{prefix} {axis_label}".strip()
             self._apply_layout(fig, title, y_label, compact=True)
-            col.plotly_chart(fig, use_container_width=True)
+            col.plotly_chart(fig, width='stretch')
 
     # Summary table
     def _display_summary_table(
@@ -630,26 +650,9 @@ class AnalyticsDashboard:
                 "Max Battery %": max(bats) if bats else "N/A",
             })
         if rows:
-            st.dataframe(rows, use_container_width=True)
+            st.dataframe(rows, width='stretch')
 
     # Figure helpers
-    def _generate_polly_figure(
-        self,
-        timestamps:  List[datetime],
-        series_data: List[List[float]],
-        *,
-        labels:  List[str] | None = None,
-        title:   str = "",
-        y_label: str = "",
-    ) -> go.Figure:
-        """Build a Plotly multi-line time-series Figure (kept for external callers)."""
-        fig    = go.Figure()
-        labels = labels or [f"Series {i+1}" for i in range(len(series_data))]
-        for values, label in zip(series_data, labels):
-            fig.add_trace(go.Scatter(x=timestamps, y=values, mode="lines", name=label))
-        self._apply_layout(fig, title, y_label)
-        return fig
-
     @staticmethod
     def _apply_layout(
         fig:     go.Figure,

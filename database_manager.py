@@ -14,7 +14,6 @@ from sqlalchemy.orm import joinedload, Session, sessionmaker
 from models import Base, DeviceStatus, EnvironmentalLog, MotionLog, OrientationLog, User
 from data_parser import DataParser
 
-
 # Connection defaults
  
 _DB_USER     = os.getenv("DB_USER",     "postgres")
@@ -27,17 +26,6 @@ DEFAULT_DATABASE_URL = os.getenv(
     "DATABASE_URL",
     f"postgresql+psycopg2://{_DB_USER}:{_DB_PASSWORD}@{_DB_HOST}:{_DB_PORT}/{_DB_NAME}",
 )
-
-# Timestamp formats accepted in uploaded CSV files
-_TS_FORMATS = (
-    "%m/%d/%Y %H:%M",
-    "%m/%d/%Y %H:%M:%S",
-    "%Y-%m-%d %H:%M:%S",
-    "%Y-%m-%dT%H:%M:%S",
-)
-
-# Commit every N successfully inserted readings to cap memory use
-_BATCH_SIZE = 250
 
 
 class DatabaseManager:
@@ -234,6 +222,12 @@ class DatabaseManager:
             session.close()
 
         return counters
+    
+    def wipe_db(self) -> None:
+        """Drop all tables and recreate the schema, effectively wiping all data."""
+        Base.metadata.drop_all(self.engine)
+        Base.metadata.create_all(self.engine)
+
 
     # ── CSV seed (file-path based; used by Setup tab) 
     def seed_from_csv(
@@ -269,6 +263,8 @@ class DatabaseManager:
                 log_cb(msg)
 
         session: Session = self.Session()
+        counters: Dict[str, int] = {"inserted": 0, "duplicates": 0, "new_users": 0, "errors": 0}
+        known_uids: set = set()
         try:
             parser = DataParser(session, user_file=user_file, sensor_file=sensor_file)
 
@@ -278,8 +274,12 @@ class DatabaseManager:
             _log(f"  Loaded {len(known_uids)} user(s)")
 
             _log(f"Loading sensors: {sensor_file}")
-            parser.parse_telemetry(known_uids=known_uids)
-            _log("  Sensor load complete")
+            with open(sensor_file, "rb") as f:
+                counters = parser.parse_telemetry_from_bytes(f)
+            _log(
+                f"  Sensor load complete — {counters['inserted']:,} inserted, "
+                f"{counters['duplicates']:,} duplicates, {counters['errors']:,} errors"
+            )
 
         except Exception:
             session.rollback()
@@ -287,48 +287,7 @@ class DatabaseManager:
         finally:
             session.close()
 
-        status = self.get_db_status()
-        return {
-            "users_loaded": len(known_uids),
-            "inserted":     status["device_status_count"],
-            "duplicates":   0,
-            "new_users":    0,
-            "errors":       0,
-        }
-
-    #Private helpers
-    @staticmethod
-    def _clean_float(val) -> float:
-        if val is None or str(val).strip() == "":
-            return 0.0
-        try:
-            return float(str(val).strip())
-        except (ValueError, TypeError):
-            return 0.0
-
-    @staticmethod
-    def _clean_int(val) -> int:
-        if val is None or str(val).strip() == "":
-            return 0
-        try:
-            return int(float(str(val).strip().replace("%", "")))
-        except (ValueError, TypeError):
-            return 0
-
-    @staticmethod
-    def _clean_str(val) -> str:
-        s = str(val).strip() if val is not None else ""
-        return s if s else "0"
-
-    @staticmethod
-    def _parse_ts(raw: str) -> Optional[datetime]:
-        raw = raw.strip()
-        for fmt in _TS_FORMATS:
-            try:
-                return datetime.strptime(raw, fmt)
-            except ValueError:
-                continue
-        return None
+        return {"users_loaded": len(known_uids), **counters}
 
     #Context manager 
     def __enter__(self) -> "DatabaseManager":
@@ -336,3 +295,4 @@ class DatabaseManager:
 
     def __exit__(self, *_) -> None:
         self.engine.dispose()
+
